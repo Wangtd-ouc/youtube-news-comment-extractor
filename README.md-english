@@ -1,1 +1,214 @@
+# YouTube News Media Video Comment Extractor
+
+Extract comments from YouTube videos matching a specified title, **limited to videos published by news media channels** only, excluding videos from individual creators. The tool also automatically filters advertising and promotional comments.
+
+## Features
+
+- Search videos by title keywords, with searches limited to YouTube's "News & Politics" category by default.
+- Automatically determine whether a video's publishing channel is a news media outlet, based on channel name/description keywords, subscriber thresholds, allowlists, and blocklists, all of which can be customized.
+- **Deduplicate and group results by media outlet/channel**, then automatically select the top N media outlets with the highest subscriber counts (`--media-count`, default: 5, recommended: 3-10). If there are not enough candidates, the tool outputs the actual available number.
+- Ignore media channels with fewer than 100,000 subscribers (`--min-subscribers`) or videos with fewer than 100 comments (`--min-video-comments`).
+- **Fetch up to M videos per media outlet** (`--videos-per-media`, default: 3), selected by popularity in descending order, prioritizing view count and then comment count. The number of media outlets and the number of videos per outlet are independent. For example, one outlet may provide 3 videos while another has only 1 eligible video.
+- **Title relevance filtering** (`--min-title-similarity`, default: 0.5): remove off-topic search results whose titles are not sufficiently related to the provided keywords.
+- Fetch a specified number of comments, defaulting to 200 and configurable. A recommended range is 200-300. Use `--count 0` to fetch all comments for a video.
+- Automatically filter advertising and promotional comments, such as external links, contact information, follower-growth spam, and part-time job scams. Rules are stored in the editable `ad_patterns.txt` file, so filtering rules can be changed without modifying code.
+- **Cross-video deduplication**: if the same author posts exactly the same comment under different videos, a common sign of spam or advertising accounts, only one copy is kept. This is enabled by default and can be disabled with `--no-dedup-filter`.
+- **Sentiment analysis** (`--sentiment`, optional): call the DeepSeek API to label each comment as positive, negative, or neutral.
+- Automatically skip videos with comments disabled, without interrupting the overall workflow.
+- Export results as CSV or JSON. Comments from multiple videos and multiple media outlets are merged into one file, with `video_id`, `video_title`, and `channel_title` included to distinguish sources. A statistical summary is also generated, including media distribution, average like counts, and Top 20 high-frequency words.
+- If run without arguments, the tool enters **guided input mode**, asking for key configuration items one by one and requesting final confirmation. This is suitable for non-command-line users.
+
+## Directory Structure
+
+```text
+youtube-news-comment-extractor/
+├── main.py             # Command-line entry point
+├── youtube_client.py   # Wrapper for YouTube Data API v3 calls
+├── filters.py          # News media channel detection, title relevance, ad comment filtering, cross-video deduplication
+├── sentiment.py        # DeepSeek sentiment analysis, optional feature
+├── summary.py          # Result summary statistics, including media distribution and high-frequency words
+├── ad_patterns.txt     # Regex rules for filtering ad comments, directly editable without code changes
+├── requirements.txt
+├── .env.example        # Environment variable template. Copy to .env and fill in your API keys
+└── output/             # Default output directory, added to .gitignore and not committed
+```
+
+## Preparation
+
+1. Apply for a **YouTube Data API v3** key: go to [Google Cloud Console](https://console.cloud.google.com/) -> create a project -> enable `YouTube Data API v3` -> create an API key.
+2. Optional: if you need sentiment analysis, apply for a [DeepSeek](https://platform.deepseek.com/) API key.
+3. Copy the environment variable template and fill in your keys:
+
+```bash
+cp .env.example .env
+# Edit .env and fill in YOUTUBE_API_KEY (required) and DEEPSEEK_API_KEY (optional)
+```
+
+> `.env` is already included in `.gitignore`, so it will not be committed to the repository. You can safely enter real API keys there.
+
+## Quick Start
+
+```bash
+git clone <your-repository-url>
+cd youtube-news-comment-extractor
+
+# Recommended: use uv (https://github.com/astral-sh/uv)
+uv venv .venv && source .venv/bin/activate
+uv pip install -r requirements.txt
+
+# Or use regular venv + pip
+# python3 -m venv .venv && source .venv/bin/activate
+# pip install -r requirements.txt
+
+cp .env.example .env   # Fill in your API key
+
+uv run main.py --title "some news video title keywords" --count 250
+# Select the top 5 media outlets by default, fetch up to 3 hottest videos per outlet,
+# and pull 250 comments from each video.
+```
+
+> **Note: dependencies are installed in the `.venv` virtual environment, not in the system Python environment.**
+> Running `python3 main.py` directly with the system Python may raise `ModuleNotFoundError`, for example missing `httplib2`.
+> For future runs, choose either of the following:
+> - Run `source .venv/bin/activate` first, then run `python3 main.py`.
+> - Or run `uv run main.py` directly. This does not require manual activation and automatically uses the project environment.
+
+## Usage
+
+### Guided Input Mode, Recommended for Beginners
+
+Run the tool without any arguments. It will ask for key configuration items one by one, then show a summary and ask for confirmation. Enter "no" to restart input:
+
+```bash
+uv run main.py
+```
+
+It will ask for: title keywords, number of media outlets, number of videos per outlet, minimum subscriber count for media channels, minimum comment count for videos, number of comments to fetch per video, whether to fetch all comments or a specific number, whether to filter ads, and output path. Other advanced parameters, such as allowlist/blocklist, keyword expansion, and sorting mode, can still only be specified through command-line arguments. Guided mode uses default values for those advanced parameters.
+
+### Command-Line Argument Mode, Suitable for Scripting and Batch Runs
+
+```bash
+uv run main.py --title "keywords" --count 200
+```
+
+As long as `--title` or `--video-id` is provided, the tool executes directly with the supplied arguments and will not enter guided input mode.
+
+### Common Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `--title` | Video title keywords, required | - |
+| `--count` | Target number of comments to extract per video. `0` means fetch all comments | 200 |
+| `--search-results` | Number of candidate videos returned by title search. A larger candidate pool makes it easier to find enough media outlets | 30 |
+| `--media-count` | Number of different media outlets to select, deduplicated by channel and sorted by subscriber count in descending order. If there are not enough candidates, the actual number is output | 5 |
+| `--videos-per-media` | Maximum number of videos to select per media outlet, sorted by popularity, prioritizing views and then comments | 3 |
+| `--no-category-filter` | Do not restrict search to the "News & Politics" category | Off, category filter enabled by default |
+| `--extra-keywords` | Additional news media channel keywords, comma-separated, for example `BBC,CNN,Lianhe Zaobao` | None |
+| `--min-subscribers` | Minimum subscriber threshold for media channels. Channels below this value are ignored | 100000 |
+| `--min-video-comments` | Minimum comment threshold for videos. Videos below this value are ignored | 100 |
+| `--min-title-similarity` | Minimum relevance between title keywords and candidate video titles, from 0 to 1, based on word-level overlap. Candidates below this value are ignored | 0.5 |
+| `--no-dedup-filter` | Disable cross-video duplicate comment filtering | Off, deduplication enabled by default |
+| `--sentiment` | Use the DeepSeek API for sentiment classification. Requires `DEEPSEEK_API_KEY` in `.env` | Off |
+| `--whitelist` | Channel allowlist, channel names or IDs separated by commas. Matches are directly treated as news media, bypassing keyword and subscriber checks | None |
+| `--blacklist` | Channel blocklist, channel names or IDs separated by commas. Matches are directly excluded | None |
+| `--no-ad-filter` | Do not filter advertising or promotional comments | Off, ad filtering enabled by default |
+| `--video-id` | Directly specify a video ID, skipping title search and media channel filtering | None |
+| `--order` | Comment sorting mode: `relevance` or `time` | time |
+| `--output` | Output file path, supports `.csv` and `.json` | `output/comments.csv` |
+
+> Note: when `order=relevance` is used, the YouTube API may truncate the comment list early, returning far fewer comments than the actual total. When fetching all comments with `--count 0`, the program automatically forces `order=time` to ensure completeness.
+
+### Examples
+
+Select 3 media outlets, fetch up to 3 hottest videos per outlet, pull all comments from each, and export the merged result:
+
+```bash
+uv run main.py --title "some news event" --media-count 3 --videos-per-media 3 --count 0 --output output/result.json
+```
+
+Only select more prominent content from channels with at least 500,000 subscribers and videos with at least 500 comments:
+
+```bash
+uv run main.py --title "some news event" --min-subscribers 500000 --min-video-comments 500
+```
+
+If a channel is known to be news media but its name does not match the default keywords, force-allow it with the allowlist:
+
+```bash
+uv run main.py --title "some news event" --whitelist "channel name or channel ID"
+```
+
+If you already know the video ID, skip search and channel filtering and fetch comments directly:
+
+```bash
+uv run main.py --video-id "VIDEO_ID" --count 250
+```
+
+Fetch comments and perform sentiment analysis:
+
+```bash
+uv run main.py --title "some news event" --sentiment
+```
+
+## News Media Channel Detection Logic
+
+1. By default, searches are performed in YouTube's "News & Politics" category (`videoCategoryId=25`). This can be disabled with `--no-category-filter`.
+2. The channel name, custom URL, or description contains news media keywords. Built-in Chinese and English keywords are listed in `DEFAULT_NEWS_KEYWORDS` in `filters.py`, and additional keywords can be provided with `--extra-keywords`.
+3. An optional subscriber threshold filters out small channels.
+4. Allowlist and blocklist have the highest priority and can force-allow or exclude specific channels.
+
+Note: the YouTube API does not provide an official field indicating whether a channel is a media organization. The above logic is a heuristic combination and may produce false positives or false negatives. You can adjust results through allowlist/blocklist and keyword parameters.
+
+## Media and Video Selection Logic
+
+1. Search candidates from the candidate pool specified by `--search-results`, then filter in order: title relevance passes threshold -> published by a news media channel -> comment count passes threshold.
+2. Deduplicate and group by channel/media outlet, sort by subscriber count in descending order, and select the top `--media-count` outlets. If there are not enough candidate outlets, the actual available number is output without error.
+3. Within each media outlet, sort videos by popularity in descending order, prioritizing view count and then comment count, and select the top `--videos-per-media` videos.
+4. The number of media outlets and the number of videos per outlet are independent dimensions. For example, if you request 3 media outlets and up to 3 videos per outlet, the result may be 3 outlets with 3 videos each, or 1 outlet with 3 videos plus 2 outlets with 1 video each, depending on how many videos from each outlet meet the comment threshold in the candidate pool.
+
+## Advertising Comment Filtering Rules
+
+Comments with the following characteristics are removed. Rules are stored in the project root's `ad_patterns.txt`, with one regular expression per line and lines starting with `#` treated as comments. You can edit this file directly to adjust rules without changing code:
+
+- External links, including HTTP(S) links, short links, and `www` domains.
+- Contact solicitation, such as adding WeChat, joining groups, Telegram, and similar contact prompts.
+- Promotional keywords, such as purchasing agents, follower boosting, part-time jobs, private-message-me prompts, recruiting agents, and similar terms.
+
+## Cross-Video Deduplication
+
+If the same author (`authorChannelId`) posts exactly the same text under different videos, only the first occurrence is kept and the rest are removed. The retained comment is annotated with `duplicate_count` to indicate how many times it appeared. This feature is enabled by default and can be disabled with `--no-dedup-filter`. Such comments are commonly seen in batch-posted spam or advertising accounts.
+
+## Sentiment Analysis, DeepSeek Optional
+
+`--sentiment` calls the `deepseek-chat` model from [DeepSeek](https://api.deepseek.com), processing comments in batches of 20 and adding a `sentiment` field to each comment, labeled as positive, negative, or neutral. `DEEPSEEK_API_KEY` must be configured in `.env`; if it is not configured, this feature will not take effect and other features will continue to work normally. If a batch request fails, that batch is marked as "unknown" and the overall workflow continues. Note that large comment volumes will generate many API calls and may incur usage-based charges.
+
+## Result Summary
+
+Each run additionally generates a `<output filename>.summary.json` file. For example, if the output is `output/comments.json`, the summary file is `output/comments.summary.json`. It includes:
+
+- Total number of comments.
+- Comment count and average like count by media outlet/channel.
+- Top 20 high-frequency words in comment text. This currently only counts English/Latin alphabet words. Chinese word segmentation is not supported yet, so Chinese frequency statistics are limited.
+
+## Tech Stack
+
+- Python 3.11+
+- `google-api-python-client`, the official YouTube Data API v3 client
+- `python-dotenv`, for loading API keys from `.env`
+- `requests`, for calling the DeepSeek API
+
+## Network Notes
+
+If the machine accesses the internet through proxy environment variables such as `HTTP_PROXY` or `HTTPS_PROXY`, `requirements.txt` already includes `pysocks`. `youtube_client.py` automatically reads proxy environment variables and injects them into the underlying `httplib2` client, so no additional configuration is required.
+
+## Quota Notes
+
+- Title search with `search.list` consumes 100 units per call, regardless of how large `--search-results` is, because it only calls once.
+- Channel information with `channels.list` and video statistics with `videos.list` each consume 1 unit. When the candidate pool is 50 or fewer, each usually requires only one call.
+- Comment fetching with `commentThreads.list` consumes 1 unit per call. Each call returns up to 100 comments, and each video is paginated based on comment volume.
+- The default daily quota for an API key is 10,000 units. A complete default workflow, 5 media outlets x 3 videos, usually consumes about 120-150 units, mainly depending on the total number of comments.
+
+## License
+
+[MIT](LICENSE)
 
